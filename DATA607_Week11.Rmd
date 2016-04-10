@@ -1,0 +1,176 @@
+---
+title: "DATA 607 Week 11 Assignment"
+author: "Logan Thomson"
+date: "April 9, 2016"
+output:
+  html_document:
+    theme: journal
+    code_folding: show
+---
+
+##Packages Used  
+
+All of the functions can be accomplished with `RTextTools` only, but the methods from the text were used, which requires the `tm` and `SnowballC` packages. 
+
+```{r load_libraries, message=FALSE, results='hide'}
+packages <- c("RTextTools", "tm", "SnowballC")
+lapply(packages, library, character.only = T)
+```
+
+##Classified Documents  
+
+The documents used in this assignment are "sentiment-labelled" sentences from reviews on Amazon, Yelp, and IMDB, and can be found on the University of California - Irvine Machine Learning Repository (https://archive.ics.uci.edu/ml/datasets/Sentiment+Labelled+Sentences).  Each text file is from the corresponding website, with each line in the file being a different review. Not all of the reivews are classified - just the reviews that could be clearly labelled as positive (with a "1") or negative (with a "0").  
+
+Here, we'll take the individual text files and put them together in a data frame, adding a `source` column in case we wanted to do some models based on the source. Even though the reviews are classified as positive or negative, the subject matter across the three different sites differs (i.e. products on Amazon, restaurants on Yelp, movies on IMDB), so the words that might classify a review differ in some cases.  
+
+```{r download_txt_files, warning=FALSE}
+yelp <- read.delim("https://raw.githubusercontent.com/Logan213/DATA607_Week11/master/yelp_labelled.txt", header = FALSE)
+yelp$source <- "Yelp"
+
+amazon <- read.delim("https://raw.githubusercontent.com/Logan213/DATA607_Week11/master/amazon_cells_labelled.txt", header = FALSE)
+amazon$source <- "Amazon"
+
+imdb <- read.delim("https://raw.githubusercontent.com/Logan213/DATA607_Week11/master/imdb_labelled.txt", header = FALSE)
+imdb$source <- "IMDB"
+
+reviews <- rbind(yelp, amazon, imdb)
+head(reviews)
+```
+
+As we can see above, the data frame contains all reviews, and only select cases are classified. There is a way to run models on unclassified data, but in this case we will remove those reviews that are not classified as positive or negative.  
+
+```{r}
+reviews <- na.omit(reviews)
+
+colnames(reviews) <- c("Text", "Sentiment", "Source")
+```
+
+#Create Corpus and Document Term Matrix  
+
+Before the data can be analyzed by the models, we need to create a Document Term Matrix, which is the format that `RTextTools` takes as its input. First we create a corpus by simply passing the `Text` column from the data frame into the nested `VectorSource` and `Corpus` functions from the `tm` (text minint) package. The meta data is set using the `meta()` function.  
+
+```{r}
+review_corpus <- Corpus(VectorSource(reviews$Text))
+meta(review_corpus[[1]], "sentiment") <- reviews$Sentiment
+meta(review_corpus[[1]], "source") <- reviews$Source
+```
+
+Once we have our corpus of words, we pass the corpus containing the text of the reviews to the `DocumentTermMatrix` function. Punctuation, numbers, and english "stop words" have been removed to improve performance of the models. All characters have also been converted to lower case, and some very sparse terms have been removed as well.  
+
+```{r document_term_matrix}
+dtm <- DocumentTermMatrix(review_corpus,
+                                  control = list(removePunctuation = TRUE,
+                                                 removeNumbers = TRUE,
+                                                 stopwords = TRUE,
+                                                 tolower = TRUE))
+
+dtm <- removeSparseTerms(dtm, 0.998)
+```
+
+`RTextTools` also has a function for creating the Document Term Matrix, using the `create_matrix` function. We could have achieved the same result using the following:  
+
+```{r alt_dtm_method, eval=FALSE}
+dtm <- create_matrix(reviews$Text, removePunctuation=TRUE, removeNumbers=TRUE, removeStopwords=TRUE, toLower=TRUE, removeSparseTerms=.998)
+```  
+
+##Model Estimation  
+
+Before running our estimation procedures, we will create a container object by passing our Document Term Matrix, `sent_labels` object containing the positive/negative classification, the number of documents to be used in our training set, the documents for the test set, and a logical value specifying whether to treat the data as virgin or not into the `create_container` function. The result is stored in an object simply called `container`.  
+
+The method below is from the text ("Automated Data Collection with R"), but alternatively, since we have a dataframe containing the data, instead of creating the   `sent_labels` object with the meta data, we could have simply passed the column with the classification information (`reviews$Sentiment`) into the fuction instead. 
+
+```{r create_container}
+sent_labels <- unlist(meta(review_corpus, "sentiment"))
+
+container <- create_container(
+  dtm,
+  labels = sent_labels,
+  trainSize = 1:1000,
+  testSize = 1001:length(sent_labels),
+  virgin = FALSE)
+```
+
+There are nine algorithms included in `RTextTools`, and for this set of documents, we will use the support vector machine ("SVM"), maximum entropy ("MAXENT"), decision tree ("TREE"), and random forest ("RF") training models. 
+
+To train our selected algorithms, we will use the `train_model` function, passing the container object and the string referencing the algorithm into it. Each of the four training sets are then passsed into the `classify_model` function to return the classified data.  
+
+```{r models}
+svm_model <- train_model(container, "SVM")
+tree_model <- train_model(container, "TREE")
+maxent_model <- train_model(container, "MAXENT")
+rf_model <- train_model(container, "RF")
+
+svm_out <- classify_model(container, svm_model)
+tree_out <- classify_model(container, tree_model)
+maxent_out <- classify_model(container, maxent_model)
+rf_out <- classify_model(container, rf_model)
+```
+
+##Model Comparison  
+
+To compare our results, we will make a data frame containing the correct labels (supplied by the `sent_labels` object), and the results of each model.  
+
+```{r labels_out_df}
+labels_out <- data.frame(
+  correct_label = sent_labels[1001:length(sent_labels)],
+  svm = as.character(svm_out[,1]),
+  tree = as.character(tree_out[,1]),
+  maxent = as.character(maxent_out[,1]),
+  rf = as.character(rf_out[,1]),
+  stringsAsFactors = FALSE)
+
+head(labels_out)
+```  
+
+A table comparing the counts of correct label to the output of the model, as well as the percentage is created for each model:  
+
+###SVM Model Performance  
+
+```{r svm_model_accuracy, echo=FALSE}
+table(labels_out[,1] == labels_out[,2])
+prop.table(table(labels_out[,1] == labels_out[,2]))
+```  
+
+###Decision Tree Performance
+
+```{r tree_model_accuracy, echo=FALSE}
+table(labels_out[,1] == labels_out[,3])
+prop.table(table(labels_out[,1] == labels_out[,3]))
+```  
+
+###Max. Entropy Performance  
+
+```{r maxent_model_accuracy, echo=FALSE}
+table(labels_out[,1] == labels_out[,4])
+prop.table(table(labels_out[,1] == labels_out[,4]))
+```  
+
+###Random Forest Performance  
+
+```{r rf_model_accuracy, echo=FALSE}
+table(labels_out[,1] == labels_out[,5])
+prop.table(table(labels_out[,1] == labels_out[,5]))
+```
+
+Alternatively, we can also use the `create_analytics` function from `RTextTools` to create a table showing the performance of each algorithm.  Calling summary on the `analytics` object will display the ensemble summary and individual algorithm performance.  
+
+```{r}
+analytics <- create_analytics(container, cbind(svm_out, tree_out, maxent_out, rf_out))
+summary(analytics)
+```  
+
+We can also get the label summary, 
+
+```{r}
+analytics@label_summary
+```  
+
+And lastly, a preview of the document summary:
+
+```{r}
+head(analytics@document_summary)
+```  
+
+##Conclusion  
+
+All four models were not able to classify the documents with greater accuracy than 70%. This may be because of the sparsity of the documents, or the different subject matter of each review set. Individually, the Support Vector Machine, Maximum Entropy, and Random Forest models performed similarly (~68-69% accuracy), and the Decision Tree model had the worst performance, with 62% accuracy.  
